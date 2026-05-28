@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+data/*-wal
+data/*-shm
+
+.streamlit/
+streamlit_stdout.log
+streamlit_stderr.log
+
+.DS_Store
+Thumbs.db
