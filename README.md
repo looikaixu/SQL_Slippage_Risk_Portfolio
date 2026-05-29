@@ -18,10 +18,12 @@ Trading platforms route orders through brokers, liquidity providers, crypto exch
 This project models a practical risk-control workflow:
 
 - Normalize multi-asset trade logs into USD-equivalent exposure.
+- Differentiate client-costly negative slippage from client-beneficial positive slippage.
 - Measure adverse execution slippage in basis points and dollars.
 - Detect exposure limit breaches at user level.
-- Identify brokers with unstable execution quality using slippage variance.
+- Identify brokers and liquidity providers with unstable execution quality using slippage variance.
 - Flag latency failures against broker service-level agreements.
+- Recommend LP routing actions such as `Keep Preferred`, `Monitor / Review SLA`, or `Restrict Routing`.
 - Present the result in a live Streamlit dashboard with filtered risk views and exportable investigation tables.
 
 The final output is an analyst-ready dashboard that answers:
@@ -30,7 +32,8 @@ The final output is an analyst-ready dashboard that answers:
 Where did execution quality fail?
 Which trades caused the largest slippage loss?
 Which users breached exposure limits?
-Which brokers should Risk Ops review first?
+Which brokers or LPs should Risk Ops review first?
+Which venues should the broker continue routing to, monitor, or restrict?
 ```
 
 ## Business Problem
@@ -41,9 +44,10 @@ The operational risk is not only the loss from one trade. The deeper risk is whe
 
 This project focuses on four realistic risk questions:
 
+- **Client versus broker slippage:** Did the trade receive positive slippage that benefits the client, or negative slippage that creates client cost and broker execution-risk exposure?
 - **Financial leakage:** Which trades created the highest USD slippage loss?
 - **Compliance exposure:** Which users exceeded their approved USD exposure cap?
-- **Broker quality:** Which venues have high slippage variance or latency failures?
+- **LP performance:** Which liquidity providers or execution venues have high slippage variance, slippage loss, or latency failures?
 - **Operational triage:** Which trades should appear first in a risk analyst's investigation queue?
 
 ## Solution Overview
@@ -56,6 +60,7 @@ The SQL layer performs the core risk logic:
 - calculates adverse slippage points
 - calculates slippage basis points
 - calculates USD slippage loss
+- classifies slippage as `ADVERSE`, `PRICE IMPROVEMENT`, or `FLAT`
 - calculates total USD exposure
 - flags exposure breaches and latency failures
 - ranks broker stability using slippage variance
@@ -67,6 +72,8 @@ The Streamlit layer turns the SQL output into an operational dashboard:
 - executive risk summary
 - broker variance chart
 - top 5 worst trades chart
+- client-costly versus client-beneficial slippage counters
+- LP routing recommendation table
 - critical risk tape
 - filtered full SQL view
 - export to Excel-compatible CSV
@@ -161,6 +168,21 @@ requested_price - executed_price
 
 Positive values mean the trade executed worse than expected. Zero means flat execution. Negative values would mean price improvement.
 
+The dashboard translates this into a client-facing direction:
+
+```text
+ADVERSE
+    negative slippage for the client; execution was worse than requested
+
+PRICE IMPROVEMENT
+    positive slippage for the client; execution was better than requested
+
+FLAT
+    executed price matched the requested price after 2-decimal rounding
+```
+
+This distinction matters in institutional brokerage because positive slippage can be a client-benefit signal, while persistent negative slippage can indicate poor routing, LP degradation, latency, or broker execution-risk exposure.
+
 ### 2. Slippage BPS
 
 Slippage BPS standardizes the price difference into basis points:
@@ -240,6 +262,23 @@ AVG(slippage_bps * slippage_bps) - AVG(slippage_bps) * AVG(slippage_bps)
 
 Average slippage alone can hide instability. A broker with low average slippage but high variance can still create unpredictable routing risk.
 
+### 8. LP Routing Recommendation
+
+The dashboard simulates how an institutional broker might review liquidity-provider performance.
+
+```text
+Keep Preferred
+    stable execution profile
+
+Monitor / Review SLA
+    elevated variance or latency warning/failure
+
+Restrict Routing
+    failed broker risk status with material slippage loss, high variance, or latency failure
+```
+
+In production, a broker could use this type of SQL output to reduce flow to underperforming venues such as a crypto exchange, prime broker, internalizer, or external liquidity provider.
+
 ## Dashboard Features
 
 The Streamlit dashboard includes:
@@ -247,9 +286,11 @@ The Streamlit dashboard includes:
 - **Executive Risk Summary:** plain-English risk summary generated from the filtered dataset.
 - **Overall Risk Status:** `NORMAL`, `ELEVATED`, or `CRITICAL` based on breaches, latency failures, and slippage loss.
 - **KPI Cards:** total USD exposure, total USD slippage loss, limit breaches, and latency failures.
+- **Client Slippage Split:** counts trades with client-costly adverse slippage versus client-beneficial price improvement.
 - **Broker Variance Chart:** identifies unstable brokers by slippage variance and asset class.
 - **Top 5 Worst Trades Chart:** ranks trades by USD slippage loss.
 - **Top 5 Worst Trades Table:** shows the exact trades behind the chart.
+- **LP Routing Recommendations:** converts broker performance into action labels for routing review.
 - **Critical Risk Tape:** investigation table for exposure breaches, watchlist items, latency warnings, and latency failures.
 - **Full SQL View:** complete filtered trade-level output with risk metrics in a risk-control sequence.
 - **Sidebar Filters:** broker, asset class, exposure status, and latency status.
@@ -323,6 +364,7 @@ Recommended screenshots:
 - entity-style table view of `user_profiles`, `brokers`, `asset_rates`, and `trade_logs`
 - `v_trade_slippage_risk` showing `CRITICAL: LIMIT BREACH` and `FAIL`
 - `v_broker_slippage_variance` showing broker risk ranking
+- LP Routing Recommendations showing which venues to keep, monitor, or restrict
 - Streamlit KPI section and Top 5 Worst Trades chart
 - Critical Risk Tape with Export to Excel button
 
@@ -337,6 +379,8 @@ This project demonstrates:
 - financial metric calculation
 - basis point analysis
 - variance-based broker monitoring
+- client-positive versus client-negative slippage classification
+- liquidity-provider performance and routing recommendation logic
 - window-function trade-loop detection
 - compliance-style breach flagging
 - Streamlit dashboard development
@@ -350,14 +394,13 @@ Use the full STAR answer in [docs/interview_pitch.md](docs/interview_pitch.md).
 
 Short version:
 
-> I built a SQL-driven operational risk dashboard that converts raw trade execution logs into standardized USD slippage loss, exposure breach flags, latency failure signals, and broker stability scores. The project demonstrates how automated SQL views and dashboarding can help a trading platform identify hidden execution costs, unstable routing venues, and users exceeding approved risk limits.
+> I built a SQL-driven operational risk dashboard that converts raw trade execution logs into standardized USD slippage loss, exposure breach flags, latency failure signals, client-positive versus client-negative slippage classification, and broker stability scores. The project demonstrates how automated SQL views and dashboarding can help a trading platform identify hidden execution costs, review liquidity-provider performance, restrict underperforming venues, and detect users exceeding approved risk limits.
 
 ## Future Enhancements
 
 Potential next upgrades:
 
 - add true `.xlsx` export using `openpyxl`
-- add broker recommendation logic such as `Restrict Routing`, `Monitor`, or `Preferred Venue`
 - add date-range filters for multi-day trade surveillance
 - add user-level exposure concentration charts
 - connect to PostgreSQL instead of SQLite

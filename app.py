@@ -331,6 +331,9 @@ def status_badge(value: str) -> str:
         "WARN": "#b7791f",
         "FAIL": "#b42318",
         "CRITICAL: LIMIT BREACH": "#b42318",
+        "Keep Preferred": "#047857",
+        "Monitor / Review SLA": "#b7791f",
+        "Restrict Routing": "#b42318",
     }
     color = colors.get(value, "#334155")
     return f"background-color: {color}; color: white; font-weight: 700; border-radius: 4px"
@@ -471,6 +474,52 @@ def build_broker_scorecard(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def lp_routing_recommendations(broker_df: pd.DataFrame) -> pd.DataFrame:
+    if broker_df.empty:
+        return pd.DataFrame(
+            columns=[
+                "broker_name",
+                "asset_class",
+                "total_usd_slippage_loss",
+                "slippage_variance",
+                "latency_fail_count",
+                "limit_breach_count",
+                "routing_action",
+            ]
+        )
+
+    recommendations = broker_df.copy()
+    recommendations["routing_action"] = "Keep Preferred"
+    recommendations.loc[
+        (recommendations["slippage_variance"] > 35) | (recommendations["latency_fail_count"] > 0),
+        "routing_action",
+    ] = "Monitor / Review SLA"
+    recommendations.loc[
+        (recommendations["broker_risk_status"] == "FAIL")
+        & (
+            (recommendations["total_usd_slippage_loss"] > 5000)
+            | (recommendations["slippage_variance"] > 100)
+            | (recommendations["latency_fail_count"] > 0)
+        ),
+        "routing_action",
+    ] = "Restrict Routing"
+
+    return recommendations[
+        [
+            "broker_name",
+            "asset_class",
+            "total_usd_slippage_loss",
+            "slippage_variance",
+            "latency_fail_count",
+            "limit_breach_count",
+            "routing_action",
+        ]
+    ].sort_values(
+        by=["routing_action", "total_usd_slippage_loss", "slippage_variance"],
+        ascending=[False, False, False],
+    )
+
+
 def overall_risk_status(limit_breaches: int, latency_fails: int, total_loss: float) -> tuple[str, str]:
     if limit_breaches >= 7 or latency_fails >= 7 or total_loss >= 60000:
         return "CRITICAL", "risk-critical"
@@ -543,12 +592,15 @@ velocity = read_sql(
 
 filtered_risk_tape = filter_risk_tape(risk_tape)
 filtered_broker_variance = build_broker_scorecard(filtered_risk_tape)
+filtered_lp_recommendations = lp_routing_recommendations(filtered_broker_variance)
 filtered_velocity = velocity[
     velocity["symbol"].isin(filtered_risk_tape["symbol"].dropna().unique())
 ].copy()
 
 total_exposure = filtered_risk_tape["total_usd_exposure"].sum()
 total_loss = filtered_risk_tape["usd_slippage_loss"].sum()
+client_costly_trades = (filtered_risk_tape["slippage_direction"] == "ADVERSE").sum()
+client_beneficial_trades = (filtered_risk_tape["slippage_direction"] == "PRICE IMPROVEMENT").sum()
 limit_breaches = (filtered_risk_tape["exposure_status"] == "CRITICAL: LIMIT BREACH").sum()
 latency_fails = (filtered_risk_tape["latency_status"] == "FAIL").sum()
 risk_status, risk_status_class = overall_risk_status(limit_breaches, latency_fails, total_loss)
@@ -566,8 +618,12 @@ st.markdown(
 metric_cols = st.columns(4)
 metric_cols[0].metric("Total USD Exposure", f"${total_exposure:,.2f}")
 metric_cols[1].metric("USD Slippage Loss", f"${total_loss:,.2f}")
-metric_cols[2].metric("Limit Breaches", f"{limit_breaches}")
-metric_cols[3].metric("Latency Fails", f"{latency_fails}")
+metric_cols[2].metric("Client-Costly Trades", f"{client_costly_trades}")
+metric_cols[3].metric("Client-Beneficial Trades", f"{client_beneficial_trades}")
+
+control_cols = st.columns(2)
+control_cols[0].metric("Limit Breaches", f"{limit_breaches}")
+control_cols[1].metric("Latency Fails", f"{latency_fails}")
 
 top_trades = filtered_risk_tape.sort_values("usd_slippage_loss", ascending=False).head(5)[
     [
@@ -660,6 +716,14 @@ critical = filtered_risk_tape[
 st.subheader("Top 5 Worst Trades")
 st.dataframe(
     styled_table(top_trades.drop(columns=["trade_label"], errors="ignore"), ["exposure_status", "latency_status"]),
+    use_container_width=True,
+    hide_index=True,
+)
+
+st.subheader("LP Routing Recommendations")
+st.caption("Institutional broker view: identify liquidity providers or venues to keep, monitor, or restrict based on slippage loss, variance, and latency failures.")
+st.dataframe(
+    styled_table(filtered_lp_recommendations, ["routing_action"]),
     use_container_width=True,
     hide_index=True,
 )
