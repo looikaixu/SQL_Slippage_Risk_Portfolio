@@ -16,7 +16,7 @@ def derive_from_outrights(outrights: pd.DataFrame, cfg: Config, field: str = "se
         prod = cfg.product(prod_code)
         px = dict(zip(g["contract_month"], g[field]))
         for front in sorted(px):
-            for s in cfg.structures.values():
+            for s in cfg.structures_for(prod_code):
                 legs = [prod.next_listed(front, k) for k in s.offsets]
                 if all(leg in px for leg in legs):
                     value = sum(w * px[leg] for w, leg in zip(s.weights, legs))
@@ -49,7 +49,7 @@ def derive_from_s1(spreads: pd.DataFrame, cfg: Config, field: str = "settle") ->
         prod = cfg.product(prod_code)
         px = dict(zip(g["front_month"], g[field]))
         for front in sorted(px):
-            for st in cfg.structures.values():
+            for st in cfg.structures_for(prod_code):
                 coeffs = _s1_coefficients(st.offsets, st.weights)
                 if coeffs is None or st.code == "S1":
                     continue
@@ -85,7 +85,7 @@ def spread_board(cfg: Config, product: str, trade_date: str, session: str | None
         board.loc[board[col].notna(), "price_source"] = tag
     board["basis"] = board["exchange"] - board["derived"]
     board["label"] = board["front_month"].map(month_label) + " " + board["structure"]
-    order = {c: i for i, c in enumerate(["S1", "S2", "FLY", "DFLY", "CONDOR"])}
+    order = {c: i for i, c in enumerate(["S1", "S2", "S4", "FLY", "DFLY", "CONDOR"])}
     board["_o"] = board["structure"].map(lambda s: order.get(s, 99))
     return board.sort_values(["_o", "front_month", "legs"]).drop(columns="_o").reset_index(drop=True)
 
@@ -99,7 +99,7 @@ def board_matrix(board: pd.DataFrame) -> pd.DataFrame:
             return ""
         return f"{r['price']:g}" + mark.get(r["price_source"], "?")
     b = board.assign(cell=board.apply(fmt, axis=1), month=board["front_month"].map(month_label))
-    known = ["S1", "S2", "FLY", "DFLY", "CONDOR"]
+    known = ["S1", "S2", "S4", "FLY", "DFLY", "CONDOR"]
     b = b[b["structure"].isin(known)]
     grid = b.pivot_table(index=["front_month", "month"], columns="structure", values="cell", aggfunc="first")
     return grid.reindex(columns=[c for c in known if c in grid.columns]).droplevel(0).fillna("")

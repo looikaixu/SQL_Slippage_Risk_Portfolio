@@ -22,11 +22,21 @@ class Product:
     tick_size: float
     listed_months: tuple[int, ...]
     ric_roots: tuple[str, ...]
+    tick_history: tuple[tuple[str, float], ...] = ()   # (effective_from ISO date, tick_size), ascending
+    structures: tuple[str, ...] = ()                    # structure codes for this product; empty = all
+
+    def tick_on(self, trade_date: str) -> float:
+        """Tick size in force on trade_date."""
+        tick = self.tick_size
+        for start, size in self.tick_history:
+            if trade_date >= start:
+                tick = size
+        return tick
 
     @property
     def tick_value(self) -> float:
-        """Currency value of one tick on one lot."""
-        return self.lot_size_t * self.tick_size
+        """Currency value of one tick on one lot (current tick size)."""
+        return self.lot_size_t * (self.tick_history[-1][1] if self.tick_history else self.tick_size)
 
     def is_listed(self, ym: str) -> bool:
         return bool(YM_RE.match(ym)) and int(ym[5:7]) in self.listed_months
@@ -80,6 +90,10 @@ class Config:
     def ric_map_path(self) -> Path:
         return self.data_dir / "reference" / "ric_map.csv"
 
+    def structures_for(self, code: str) -> list[Structure]:
+        wanted = self.product(code).structures
+        return [s for c, s in self.structures.items() if not wanted or c in wanted]
+
     def product(self, code: str) -> Product:
         try:
             return self.products[code]
@@ -102,6 +116,8 @@ def load_config(root: Path | str = DEFAULT_ROOT) -> Config:
             tick_size=float(p["tick_size"]),
             listed_months=tuple(int(m) for m in p["listed_months"]),
             ric_roots=tuple(p.get("ric_roots") or ()),
+            tick_history=tuple(sorted((str(t["from"]), float(t["tick_size"])) for t in p.get("tick_history") or ())),
+            structures=tuple(p.get("structures") or ()),
         )
         for code, p in spec["products"].items()
     }
@@ -111,6 +127,9 @@ def load_config(root: Path | str = DEFAULT_ROOT) -> Config:
             raise ValueError(f"Structure {code}: offsets/weights mismatch or offsets[0] != 0")
         structures[code] = Structure(code, tuple(s["offsets"]), tuple(s["weights"]))
 
+    for prod in products.values():
+        if unknown := set(prod.structures) - set(structures):
+            raise ValueError(f"{prod.code}: unknown structures {sorted(unknown)}")
     return Config(
         root=root,
         source=spec.get("source", "REUTERS"),

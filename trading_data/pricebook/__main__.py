@@ -8,10 +8,12 @@ from pathlib import Path
 import pandas as pd
 
 from .config import load_config, month_label
+from .cross import dapo
 from .ingest import IngestError, ingest_file
 from .roll import oi_ratio
 from .store import load
 from .structures import board_matrix, spread_board
+from .tables import import_contract_table
 from .validate import validate_all
 
 
@@ -34,7 +36,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--session", help="EOD (default) | AM_CLOSE | PM_CLOSE | NIGHT")
     p.add_argument("--dayfirst", action="store_true", help="parse 13/11/2026 style dates")
 
+    p = sub.add_parser("import-table", help="tidy LSEG table: date,contract(Jan-27),close,settle,volume,oi,expiry")
+    p.add_argument("file", type=Path)
+    p.add_argument("--product", required=True)
+    p.add_argument("--source-note", required=True, help="e.g. 'FCPO Data.xlsx/FCPO Price'")
+
     sub.add_parser("validate", help="data-quality checks (exit 1 on ERROR)")
+
+    p = sub.add_parser("dapo", help="DCE palm olein active (MYR) - FCPO 3rd month")
+    p.add_argument("--start")
+    p.add_argument("--end")
+    p.add_argument("--tail", type=int, default=15)
 
     p = sub.add_parser("board", help="spread board for one date (exchange > from-S1 > from-outrights)")
     p.add_argument("product")
@@ -65,6 +77,19 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ingest failed: {e}", file=sys.stderr)
             return 2
         return _print_issues(validate_all(cfg))
+
+    if a.cmd == "import-table":
+        r = import_contract_table(a.file, a.product, cfg, a.source_note)
+        print(f"{a.file.name}: {r['rows']} rows, {r['days']} days, {r['contracts']} contracts")
+        return _print_issues(validate_all(cfg))
+
+    if a.cmd == "dapo":
+        d = dapo(cfg, a.start, a.end)
+        cols = ["trade_date", "dce_label", "dce_close_cny", "cny_myr", "dce_close_myr", "fcpo_label",
+                "fcpo_close_myr", "dapo_myr", "dapo_usd", "dce_roll", "fcpo_roll"]
+        d = d.round({"dce_close_myr": 1, "dapo_myr": 1, "dapo_usd": 1})
+        print(d[[c for c in cols if c in d.columns]].tail(a.tail).to_string(index=False))
+        return 0
 
     if a.cmd == "validate":
         return _print_issues(validate_all(cfg))
@@ -98,6 +123,9 @@ def main(argv: list[str] | None = None) -> int:
             s = df.groupby("product").agg(first=("trade_date", "min"), last=("trade_date", "max"),
                                           days=("trade_date", "nunique"), rows=("trade_date", "size"))
             print(f"{kind}:\n{s.to_string()}\n")
+        for fx_dir in sorted((cfg.data_dir / "fx").glob("*")):
+            dates = sorted(pd.concat(pd.read_csv(f, dtype={"trade_date": str})["trade_date"] for f in fx_dir.glob("*.csv")))
+            print(f"fx {fx_dir.name}: {dates[0]} .. {dates[-1]}  ({len(dates)} days)")
         return 0
     return 1
 

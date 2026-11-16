@@ -13,6 +13,7 @@ products:
     tick_size: 1                                    # MYR/t -> MYR 25 per tick
     listed_months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     ric_roots: [FCPO]                               # VERIFY against export
+    structures: [S1, S2, FLY, DFLY, CONDOR]         # shown on the spread board
 
   DCE_P:
     name: RBD Palm Olein Futures
@@ -20,8 +21,11 @@ products:
     currency: CNY
     lot_size_t: 10
     tick_size: 2                                    # CNY/t -> CNY 20 per tick
+    tick_history:                                   # VERIFY with DCE notice: LSEG prices move in 1-CNY steps
+      - {from: "2026-04-10", tick_size: 1}          # from 2026-04-10 (odd prices never appear before that date)
     listed_months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     ric_roots: []                                   # VERIFY: fill from first export, or use ric_map.csv
+    structures: [S4]                                # main contracts Jan/May/Sep: JAN S4, MAY S4, SEP S4
 
   DCE_Y:
     name: Soybean Oil Futures
@@ -31,6 +35,7 @@ products:
     tick_size: 2                                    # CNY/t -> CNY 20 per tick
     listed_months: [1, 3, 5, 7, 8, 9, 11, 12]       # VERIFY
     ric_roots: []                                   # VERIFY: fill from first export, or use ric_map.csv
+    structures: [S1, S2, FLY, DFLY, CONDOR]         # VERIFY once soybean oil data arrives
 
 # Offsets are positions in the LISTED-month sequence of the product (not calendar months).
 # Sign convention: price = sum(weight_i * leg_i), leg 0 = nearest month.
@@ -38,6 +43,7 @@ products:
 structures:
   S1:     {offsets: [0, 1],       weights: [1, -1]}
   S2:     {offsets: [0, 2],       weights: [1, -1]}
+  S4:     {offsets: [0, 4],       weights: [1, -1]}  # e.g. DCE JAN S4 = Jan - May (DCE main-contract spreads)
   FLY:    {offsets: [0, 1, 2],    weights: [1, -2, 1]}
   DFLY:   {offsets: [0, 1, 2, 3], weights: [1, -3, 3, -1]}
   CONDOR: {offsets: [0, 1, 2, 3], weights: [1, -1, -1, 1]}

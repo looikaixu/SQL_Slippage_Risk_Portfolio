@@ -69,9 +69,10 @@ def _check_file(path: Path, kind: str, cfg: Config) -> list[Issue]:
             issues.append(err(f"contract months not listed for {prod.code}: {sorted(set(bad_m))}"))
         if (px["settle"] <= 0).any():
             issues.append(err("non-positive outright settle"))
-        off_tick = px.notna() & ((px / prod.tick_size).round(6) % 1 != 0)
+        tick = prod.tick_on(file_date)
+        off_tick = px.notna() & ((px / tick).round(6) % 1 != 0)
         if off_tick.any().any():
-            issues.append(warn(f"prices not on tick grid ({prod.tick_size})"))
+            issues.append(warn(f"prices not on tick grid ({tick:g})"))
     else:
         for legs, front, struct in zip(df["legs"], df["front_month"], df["structure"]):
             parts = str(legs).split("|")
@@ -103,10 +104,28 @@ def _sign_check(cfg: Config) -> list[Issue]:
     return issues
 
 
+def _check_fx(cfg: Config) -> list[Issue]:
+    issues = []
+    for path in sorted((cfg.data_dir / "fx").glob("*/*.csv")):
+        rel = str(path.relative_to(cfg.root))
+        df = pd.read_csv(path, dtype={"trade_date": str})
+        if df["trade_date"].duplicated().any():
+            issues.append(Issue("ERROR", rel, "duplicate trade_date"))
+        if (pd.to_numeric(df["rate"], errors="coerce") <= 0).any() or df["rate"].isna().any():
+            issues.append(Issue("ERROR", rel, "missing or non-positive rate"))
+        if (df["trade_date"].str[:4] != path.stem[-4:]).any():
+            issues.append(Issue("ERROR", rel, "trade_date outside file year"))
+        jump = pd.to_numeric(df["rate"]).pct_change().abs().max()
+        if jump > 0.05:
+            issues.append(Issue("WARN", rel, f"day-on-day FX move {jump:.1%}"))
+    return issues
+
+
 def validate_all(cfg: Config) -> list[Issue]:
     issues: list[Issue] = []
     for kind in SCHEMAS:
         for path in sorted((cfg.data_dir / kind).glob("*/*/*.csv")):
             issues.extend(_check_file(path, kind, cfg))
+    issues.extend(_check_fx(cfg))
     issues.extend(_sign_check(cfg))
     return issues

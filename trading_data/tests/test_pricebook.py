@@ -199,3 +199,58 @@ def test_fly_built_from_exchange_s1_before_outrights(cfg, tmp_path):
     assert b.loc["JAN27 DFLY", "price"] == 30 - 2 * 21 + 18
     assert b.loc["JAN27 CONDOR", "price"] == 30 - 18
     assert b.loc["JAN27 S2", "price"] == 30 + 21
+
+
+# --- LSEG tidy tables / FX / DAPO ----------------------------------------------------------------------
+
+from pricebook.cross import dapo  # noqa: E402
+from pricebook.tables import contract_label_to_ym, import_contract_table, load_fx, upsert_fx  # noqa: E402
+
+
+def _table(path: Path, rows: list[tuple], cols: str) -> Path:
+    pd.DataFrame(rows, columns=cols.split(",")).to_csv(path, index=False)
+    return path
+
+
+def test_contract_label():
+    assert contract_label_to_ym("Jan-27") == "2027-01" and contract_label_to_ym("Sep-20") == "2020-09"
+
+
+def test_import_contract_table_and_reference(cfg, tmp_path):
+    f = _table(tmp_path / "dce.csv", [("2026-11-13", "Jan-27", "2027-01-14", 500, 8961, 8950),
+                                     ("2026-11-13", "May-27", "2027-05-14", 330, 9473, 9462)],
+               "date,contract,expiry,oi,close,settle")
+    r = import_contract_table(f, "DCE_P", cfg, "test")
+    assert r == {"rows": 2, "days": 1, "contracts": 2}
+    o = load(cfg, "outrights", "DCE_P")
+    assert o.set_index("contract_month").loc["2027-05", "open_interest"] == 330
+    ref = pd.read_csv(cfg.data_dir / "reference" / "contracts.csv", dtype=str)
+    assert ref[["product", "contract_month", "expiry"]].values.tolist()[0] == ["DCE_P", "2027-01", "2027-01-14"]
+    b = spread_board(cfg, "DCE_P", "2026-11-13").set_index("label")
+    assert list(b.index) == ["JAN27 S4"] and b.loc["JAN27 S4", "price"] == 8950 - 9462     # only S4 for DCE_P
+
+
+def test_tick_history(cfg):
+    p = cfg.product("DCE_P")
+    assert p.tick_on("2026-04-09") == 2 and p.tick_on("2026-04-10") == 1
+
+
+def test_dapo_rules(cfg, tmp_path):
+    # DCE: May has max OI on day 1, Sep on day 2 (roll). FCPO: 3rd nearest live contract.
+    import_contract_table(_table(tmp_path / "d.csv", [
+        ("2026-04-01", "May-26", 900, 9000, 9000), ("2026-04-01", "Sep-26", 800, 9100, 9100),
+        ("2026-04-02", "May-26", 700, 9010, 9010), ("2026-04-02", "Sep-26", 950, 9120, 9120)],
+        "date,contract,oi,close,settle"), "DCE_P", cfg, "t")
+    rows = [(d, m, 4000 + i, 4000 + i, 1, 1) for d in ("2026-04-01", "2026-04-02")
+            for i, m in enumerate(["Apr-26", "May-26", "Jun-26", "Jul-26"])]
+    import_contract_table(_table(tmp_path / "f.csv", rows, "date,contract,close,settle,volume,oi"), "FCPO", cfg, "t")
+    upsert_fx(cfg, "CNYMYR", pd.DataFrame({"trade_date": ["2026-04-01", "2026-04-02"], "rate": [0.6, 0.61]}), "t")
+    upsert_fx(cfg, "USDMYR", pd.DataFrame({"trade_date": ["2026-04-01", "2026-04-02"], "rate": [4.0, 4.0]}), "t")
+    assert load_fx(cfg, "CNYMYR").loc["2026-04-02"] == 0.61
+
+    d = dapo(cfg).set_index("trade_date")
+    assert d.loc["2026-04-01", "dce_month"] == "2026-05" and d.loc["2026-04-02", "dce_month"] == "2026-09"
+    assert d.loc["2026-04-01", "fcpo_month"] == "2026-06"                      # 3rd: Apr, May, *Jun*
+    assert d.loc["2026-04-01", "dapo_myr"] == pytest.approx(9000 * 0.6 - 4002)
+    assert d.loc["2026-04-02", "dapo_usd"] == pytest.approx((9120 * 0.61 - 4002) / 4.0)
+    assert d["dce_roll"].tolist() == [0, 1] and d["fcpo_roll"].tolist() == [0, 0]

@@ -1,62 +1,75 @@
 # pricebook: FCPO / DCE palm olein / DCE soybean oil price store
 
-Reuters EOD exports are normalized into one CSV per product per day. Exchange-traded spread prices are stored as **first-class data**, separate from outrights, so the spread board never depends on outright leg prices when a real spread print exists.
+LSEG (Reuters) EOD prices normalized into **one CSV per product per trading day**. Raw prices are stored; every spread, fly, condor and DAPO value is computed in code. Exchange-traded spread prints are stored separately and always take priority over computed values.
 
-## Daily workflow
+## Coverage
+| Dataset | Product | From | To | Notes |
+|---|---|---|---|---|
+| Outrights | `FCPO` | 2019-01-16 | 2026-11-13 | 95 contracts (Jan-20 to Nov-27); close, settle, volume, OI |
+| Outrights | `DCE_P` palm olein | 2019-01-16 | 2026-11-13 | Jan / May / Sep only; close, settle, OI (no volume) |
+| FX | `CNYMYR` | 2020-01-02 | 2026-11-13 | as exported (5 dp) |
+| FX | `USDMYR` | 2020-01-02 | 2026-11-13 | **implied** (not exported), approx. ±0.0002 |
+| Exchange spreads | none | | | Still needed: the LSEG spread sheet is outright arithmetic (see audit) |
+| Outrights | `DCE_Y` soybean oil | none | | Not exported yet |
+
+Source and reconciliation: [`docs/data_audit.md`](docs/data_audit.md). Run `python -m pricebook coverage` for the current state.
+
+## Commands (run from `trading_data/`)
 ```bash
 pip install -r requirements.txt
-# 1. drop Reuters export(s) into data/inbox/   (git-ignored)
-python -m pricebook ingest data/inbox/*.xlsx      # add --dayfirst for 13/11/2026 dates, --ric X for single-RIC files
-# 2. ingest runs validation automatically; fix any ERROR
-python -m pricebook board FCPO                    # latest spread board
-# 3. commit data/outrights + data/spreads and push; CI re-validates
+python -m pricebook coverage                      # what is stored
+python -m pricebook board FCPO [2026-11-13]       # spread board (latest date by default)
+python -m pricebook board DCE_P --detail          # long table: exchange / from_s1 / derived / basis
+python -m pricebook roll DCE_P [--old 2027-01 --new 2027-05] [--start 2026-10-01]
+python -m pricebook dapo --tail 20                # DCE active (MYR) - FCPO 3rd month, MYR and USD
+python -m pricebook validate                      # data-quality gate (CI runs it on every push)
 ```
-Re-ingesting the same date overwrites by key, so corrections are safe.
+
+## Adding new data
+| Export shape | Command |
+|---|---|
+| Reuters RIC export (`FCPOF7`, `FCPOF7-G7`, ...), xlsx/csv | `python -m pricebook ingest data/inbox/<file>` (`--dayfirst`, `--ric`) |
+| Tidy LSEG table `date,contract(Jan-27),close,settle,volume,oi,expiry` | `python -m pricebook import-table <file> --product DCE_P --source-note "DCE data 1.xlsx/DCE Outright Price"` |
+
+Re-importing a date overwrites by key, so corrections are safe. Put raw exports in `data/inbox/`, which is never committed.
 
 ## Layout
 ```
-config/products.yaml        contract specs, listed months, structure weights, roll threshold
-config/reuters_columns.yaml Reuters header aliases -> canonical fields
-data/inbox/                 raw exports (not committed)
+config/products.yaml          specs, listed months, tick history, structures per product, roll threshold
+config/reuters_columns.yaml   Reuters header aliases
 data/outrights/<P>/<YYYY>/<P>_<date>.csv
-data/spreads/<P>/<YYYY>/<P>_<date>.csv
-data/reference/ric_map.csv  explicit RIC -> product / structure / legs overrides
-pricebook/                  ingest, validate, structures (board), roll, CLI
+data/spreads/<P>/<YYYY>/<P>_<date>.csv       exchange spread prints only
+data/fx/<PAIR>/<PAIR>_<YYYY>.csv
+data/reference/contracts.csv  product, contract_month, expiry, expiry_basis
+data/reference/ric_map.csv    explicit RIC overrides
+docs/data_audit.md            provenance + reconciliation of the backfill
+pricebook/                    library + CLI
+scripts/backfill_dce_monitor.py   one-off import from the DCE Rolling Monitor datasets
 ```
 
 ## Schemas
-**outrights**: `trade_date, session, exchange, product, contract_month, ric, open, high, low, close, settle, volume, open_interest, currency, source, ingested_at`
-Key: `(trade_date, session, contract_month)`
+**outrights**: `trade_date, session, exchange, product, contract_month, ric, open, high, low, close, settle, volume, open_interest, currency, source, ingested_at`. Key `(trade_date, session, contract_month)`.
 
-**spreads** (exchange prints): `trade_date, session, exchange, product, structure, front_month, legs, ric, open, high, low, close, settle, volume, open_interest, currency, source, ingested_at`
-Key: `(trade_date, session, structure, legs)`. `legs` = `2027-01|2027-02`.
+**spreads**: same, with `structure, front_month, legs` in place of `contract_month`. Key `(trade_date, session, structure, legs)`; `legs` = `2027-01|2027-05`.
 
-Products: `FCPO` (BMD, MYR), `DCE_P` (palm olein, CNY), `DCE_Y` (soybean oil, CNY). Contract months are ISO `YYYY-MM` and display as `JAN27`.
+**fx**: `trade_date, pair, rate, source, note`. `rate` = MYR per 1 unit of the base currency.
 
-## Spread board price priority
-| Source | Meaning | Board marker |
-|---|---|---|
-| `EXCHANGE` | the structure's own exchange print | plain |
-| `FROM_S1` | built from exchange S1 prints (JAN FLY = JAN S1 − FEB S1) | `~` |
-| `DERIVED` | built from outright prices (fallback, carries leg slippage) | `*` |
+`source` records the workbook and sheet, e.g. `REUTERS:DCE data 1.xlsx/DCE Outright Price+DCE OI historical data`.
 
-`basis = exchange − derived`: the gap between the real spread print and the outright-implied value.
+## Conventions
+- Contract months are ISO `YYYY-MM` and display as `JAN27`.
+- Sign is near minus far. FCPO: JAN S1 = JAN − FEB; FLY = S1(m) − S1(m+1); DFLY = FLY(m) − FLY(m+1); CONDOR = S1(m) − S1(m+2).
+- DCE_P works on main contracts: JAN S4 = Jan − May, MAY S4 = May − Sep, SEP S4 = Sep − next Jan.
+- Spread board price priority: `EXCHANGE` (plain) > `FROM_S1` built from exchange S1 prints (`~`) > `DERIVED` from outrights (`*`).
+- **DAPO** = DCE_P max-OI contract close × CNYMYR − FCPO 3rd nearest live contract close. USD = ÷ USDMYR. `*_roll` = 1 when the chosen contract changes.
+- Roll monitor: OI(new)/OI(old), with the journal heuristic of 1.5 = roll done.
 
-Sign convention: near minus far. Validation fails if stored spread prints look sign-inverted relative to that.
-
-## RIC resolution
-1. `data/reference/ric_map.csv` (explicit, wins). Use it for DCE RICs, flies or condors, and any format the parser does not know.
-2. Parser: `ROOT + MonthCode + Year[-[ROOT]MonthCode+Year][^decade]`, e.g. `FCPOF7`, `FCPOF7-G7`, `FCPOF3^2`. Roots are in `products.yaml`.
-Continuation RICs (`FCPOc1`) are rejected because they change contract over time.
-
-Unresolved RICs stop ingestion with the full list, so nothing is silently dropped.
-
-## First Reuters export checklist
-- [ ] Put the exact Reuters header text first in each list in `reuters_columns.yaml`
-- [ ] Confirm the FCPO RIC root, then set `ric_roots` for DCE_P / DCE_Y or fill `ric_map.csv`
-- [ ] Confirm how the spread RIC is formatted and whether butterfly / condor RICs exist
-- [ ] Confirm the spread price sign (validation flags an inversion)
-- [ ] Confirm the DCE_Y listed months and the tick sizes in `products.yaml`
+## Still to confirm
+- [ ] DCE palm olein tick size went from 2 to 1 CNY around 2026-04-10. Prices first move in 1-CNY steps that day, and `tick_history` assumes the change.
+- [ ] Export the **exchange spread prices** (DCE Jan-May / May-Sep / Sep-Jan; FCPO S1 / fly / condor). The current sheet is computed from outrights.
+- [ ] Export `USDMYR` from LSEG so the stored rate isn't implied.
+- [ ] Export DCE soybean oil, and check its listed months and structures in `products.yaml`.
+- [ ] Confirm the RIC formats for `ingest`.
 
 ## Tests
 ```bash
