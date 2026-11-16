@@ -1,4 +1,0 @@
-data/inbox/*
-!data/inbox/.gitkeep
-__pycache__/
-.pytest_cache/
